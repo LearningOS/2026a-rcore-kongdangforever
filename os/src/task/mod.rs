@@ -54,6 +54,7 @@ lazy_static! {
         let mut tasks = [TaskControlBlock {
             task_cx: TaskContext::zero_init(),
             task_status: TaskStatus::UnInit,
+            syscall_count:[0;500],
         }; MAX_APP_NUM];
         for (i, task) in tasks.iter_mut().enumerate() {
             task.task_cx = TaskContext::goto_restore(init_app_cx(i));
@@ -135,6 +136,18 @@ impl TaskManager {
             panic!("All applications completed!");
         }
     }
+
+    // pub fn get_current_task(&self,id:usize) -> usize {
+    //     let mut inner = self.inner.exclusive_access();
+    //     let current = inner.current_task;
+    //     inner.tasks[current].syscall_count[id]
+    // }
+
+    // pub fn inc_current_syscall_count(&mut self,id:usize){
+    //     let mut inner = self.inner.exclusive_access();
+    //     let current = inner.current_task;
+    //     inner.tasks[current].syscall_count[id]+=1;
+    // }
 }
 
 /// Run the first task in task list.
@@ -168,4 +181,25 @@ pub fn suspend_current_and_run_next() {
 pub fn exit_current_and_run_next() {
     mark_current_exited();
     run_next_task();
+}
+
+
+/// 增加当前任务对指定系统调用的调用次数
+pub fn inc_current_syscall_count(syscall_id: usize) {
+    let mut inner = TASK_MANAGER.inner.exclusive_access();
+    let current = inner.current_task;
+    if current < inner.tasks.len() && syscall_id < 500 {
+        inner.tasks[current].syscall_count[syscall_id] += 1;
+    }
+}
+
+/// 获取当前任务对指定系统调用的调用次数
+pub fn get_current_syscall_count(syscall_id: usize) -> usize {
+    let inner = TASK_MANAGER.inner.exclusive_access();
+    let current = inner.current_task;
+    if current < inner.tasks.len() && syscall_id < 500 {
+        inner.tasks[current].syscall_count[syscall_id]
+    } else {
+        0
+    }
 }
