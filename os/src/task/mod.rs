@@ -230,6 +230,7 @@ pub fn get_current_syscall_count(syscall_id: usize) -> usize {
         .unwrap_or(0)
 }
 
+/// 为当前任务的虚拟地址区间分配物理页并建立映射，失败返回错误。
 pub fn mmap_current(
     start: usize,
     end: usize,
@@ -243,6 +244,7 @@ pub fn mmap_current(
         .mmap(start, end, permission)
 }
 
+/// 为当前任务的虚拟地址区间释放物理页映射，失败返回错误。
 pub fn munmap_current(start: usize, end: usize) -> Result<(), ()> {
     let mut inner = TASK_MANAGER.inner.exclusive_access();
     let current = inner.current_task;

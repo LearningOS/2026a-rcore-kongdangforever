@@ -58,7 +58,7 @@ pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
         )
     };
 
-    let buffers=translated_byte_buffer(current_user_token(),ts as *const u8,size_of::<TimeVal>());
+    let buffers=translated_byte_buffer(current_user_token(),_ts as *const u8,size_of::<TimeVal>());
 
     let mut offset =0;
 
@@ -76,10 +76,10 @@ pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
 pub fn sys_trace(_trace_request: usize, _id: usize, _data: usize) -> isize {
     trace!("kernel: sys_trace");
 
-    match trace_request{
+    match _trace_request{
         0 | 1 => {
-            let upper = id >> 39;
-            let sign = (id >> 38) & 1;
+            let upper = _id >> 39;
+            let sign = (_id >> 38) & 1;
             let expected_upper = if sign == 0 {
                 0
             } else {
@@ -91,7 +91,7 @@ pub fn sys_trace(_trace_request: usize, _id: usize, _data: usize) -> isize {
             }
 
             let page_table = PageTable::from_token(current_user_token());
-            let va=VirtAddr::from(id);
+            let va=VirtAddr::from(_id);
 
             let pte = match page_table.translate(va.floor()){
                 Some(pte) => pte,
@@ -102,7 +102,7 @@ pub fn sys_trace(_trace_request: usize, _id: usize, _data: usize) -> isize {
                 return -1;
             }
 
-            if trace_request == 0 {
+            if _trace_request == 0 {
                 if !pte.readable(){
                     return -1;
                 }
@@ -115,11 +115,11 @@ pub fn sys_trace(_trace_request: usize, _id: usize, _data: usize) -> isize {
                 }
 
                 let bytes=pte.ppn().get_bytes_array();
-                bytes[va.page_offset()]=data as u8;
+                bytes[va.page_offset()]=_data as u8;
                 0
             }
         }
-        2 => get_current_syscall_count(id) as isize,
+        2 => get_current_syscall_count(_id) as isize,
 
         _ => -1,
     }
@@ -128,19 +128,19 @@ pub fn sys_trace(_trace_request: usize, _id: usize, _data: usize) -> isize {
 // YOUR JOB: Implement mmap.
 pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
     trace!("kernel: sys_mmap NOT IMPLEMENTED YET!");
-    if start % PAGE_SIZE != 0 {
+    if _start % PAGE_SIZE != 0 {
         return -1;
     }
 
-    if prot & !0x7 != 0 || prot & 0x7 == 0 {
+    if _port & !0x7 != 0 || _port & 0x7 == 0 {
         return -1;
     }
 
-    if len == 0 {
+    if _len == 0 {
         return 0;
     }
 
-    let end = match start.checked_add(len) {
+    let end = match _start.checked_add(_len) {
         Some(end) => end,
         None => return -1,
     };
@@ -152,9 +152,9 @@ pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
         upper == if sign == 0 { 0 } else { usize::MAX >> 39 }
     };
 
-    if !is_sv39_address(start)
+    if !is_sv39_address(_start)
         || !is_sv39_address(end - 1)
-        || (start >> 38) != ((end - 1) >> 38)
+        || (_start >> 38) != ((end - 1) >> 38)
     {
         return -1;
     }
@@ -167,17 +167,17 @@ pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
 
     let mut permission = MapPermission::U;
 
-    if prot & 0x1 != 0 {
+    if _port & 0x1 != 0 {
         permission |= MapPermission::R;
     }
-    if prot & 0x2 != 0 {
+    if _port & 0x2 != 0 {
         permission |= MapPermission::W;
     }
-    if prot & 0x4 != 0 {
+    if _port & 0x4 != 0 {
         permission |= MapPermission::X;
     }
 
-    match mmap_current(start, aligned_end, permission) {
+    match mmap_current(_start, aligned_end, permission) {
         Ok(()) => 0,
         Err(()) => -1,
     }
@@ -186,15 +186,15 @@ pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
 // YOUR JOB: Implement munmap.
 pub fn sys_munmap(_start: usize, _len: usize) -> isize {
     trace!("kernel: sys_munmap NOT IMPLEMENTED YET!");
-    if start % PAGE_SIZE != 0 {
+    if _start % PAGE_SIZE != 0 {
         return -1;
     }
 
-    if len == 0 {
+    if _len == 0 {
         return 0;
     }
 
-    let end = match start.checked_add(len) {
+    let end = match _start.checked_add(_len) {
         Some(end) => end,
         None => return -1,
     };
@@ -211,9 +211,9 @@ pub fn sys_munmap(_start: usize, _len: usize) -> isize {
         }
     };
 
-    if !is_sv39_address(start)
+    if !is_sv39_address(_start)
         || !is_sv39_address(end - 1)
-        || (start >> 38) != ((end - 1) >> 38)
+        || (_start >> 38) != ((end - 1) >> 38)
     {
         return -1;
     }
@@ -223,7 +223,7 @@ pub fn sys_munmap(_start: usize, _len: usize) -> isize {
         None => return -1,
     };
 
-    match munmap_current(start, aligned_end) {
+    match munmap_current(_start, aligned_end) {
         Ok(()) => 0,
         Err(()) => -1,
     }

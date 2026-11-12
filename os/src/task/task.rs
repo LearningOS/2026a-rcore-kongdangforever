@@ -29,6 +29,7 @@ pub struct TaskControlBlock {
     /// Program break
     pub program_brk: usize,
 
+    /// 当前任务各系统调用的累计调用次数，以系统调用编号作为下标。
     pub syscall_count: [usize; 500],
 }
 
@@ -65,7 +66,7 @@ impl TaskControlBlock {
             base_size: user_sp,
             heap_bottom: user_sp,
             program_brk: user_sp,
-            syscall_count: [0; 500];
+            syscall_count: [0; 500],
         };
         // prepare TrapContext in user space
         let trap_cx = task_control_block.get_trap_cx();

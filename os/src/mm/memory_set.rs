@@ -263,7 +263,8 @@ impl MemorySet {
         }
     }
     
-    pub fn mmap(&mut self,start:usize,end:usize,permission:MapPermission){
+    /// 为指定虚拟地址区间分配物理页并建立映射，失败返回错误。
+    pub fn mmap(&mut self,start:usize,end:usize,permission:MapPermission) -> Result<(),()>{
         let mut area = MapArea::new(
             VirtAddr::from(start),
             VirtAddr::from(end),

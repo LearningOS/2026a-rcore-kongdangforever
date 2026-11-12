@@ -157,7 +157,7 @@ impl PageTable {
     }
 
 
-    
+    /// 尝试映射虚拟页到物理页，失败返回错误。
     pub fn try_map(
         &mut self,
         vpn: VirtPageNum,
