@@ -21,6 +21,7 @@ use alloc::vec::Vec;
 use lazy_static::*;
 use switch::__switch;
 pub use task::{TaskControlBlock, TaskStatus};
+use crate::mm::MapPermission;
 
 pub use context::TaskContext;
 
@@ -201,4 +202,50 @@ pub fn current_trap_cx() -> &'static mut TrapContext {
 /// Change the current 'Running' task's program break
 pub fn change_program_brk(size: i32) -> Option<usize> {
     TASK_MANAGER.change_current_program_brk(size)
+}
+
+
+/// 记录当前任务的一次系统调用。
+pub fn inc_current_syscall_count(syscall_id: usize) {
+    let mut inner = TASK_MANAGER.inner.exclusive_access();
+    let current = inner.current_task;
+
+    if let Some(count) = inner.tasks[current]
+        .syscall_count
+        .get_mut(syscall_id)
+    {
+        *count += 1;
+    }
+}
+
+/// 查询当前任务指定系统调用的次数。
+pub fn get_current_syscall_count(syscall_id: usize) -> usize {
+    let inner = TASK_MANAGER.inner.exclusive_access();
+    let current = inner.current_task;
+
+    inner.tasks[current]
+        .syscall_count
+        .get(syscall_id)
+        .copied()
+        .unwrap_or(0)
+}
+
+pub fn mmap_current(
+    start: usize,
+    end: usize,
+    permission: MapPermission,
+) -> Result<(), ()> {
+    let mut inner = TASK_MANAGER.inner.exclusive_access();
+    let current = inner.current_task;
+
+    inner.tasks[current]
+        .memory_set
+        .mmap(start, end, permission)
+}
+
+pub fn munmap_current(start: usize, end: usize) -> Result<(), ()> {
+    let mut inner = TASK_MANAGER.inner.exclusive_access();
+    let current = inner.current_task;
+
+    inner.tasks[current].memory_set.munmap(start, end)
 }

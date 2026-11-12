@@ -262,6 +262,123 @@ impl MemorySet {
             false
         }
     }
+    
+    pub fn mmap(&mut self,start:usize,end:usize,permission:MapPermission){
+        let mut area = MapArea::new(
+            VirtAddr::from(start),
+            VirtAddr::from(end),
+            MapType::Framed,
+            permission,
+        );
+
+        for vpn in area.vpn_range {
+            if let Some(pte) = self.page_table.translate(vpn){
+                if pte.is_valid(){
+                    return Err(());
+                }
+            }
+        }
+
+        let flags=PTEFlags::from_bits(permission.bits).ok_or(())?;
+
+        for vpn in area.vpn_range {
+            let frame = match frame_alloc() {
+                Some(frame) => frame,
+                None => {
+                    for &mapped_vpn in area.data_frames.keys() {
+                        self.page_table.unmap(mapped_vpn);
+                    }
+                    return Err(());
+                }
+            };
+            if self.page_table.try_map(vpn,frame.ppn,flags).is_err(){
+                for &mapped_vpn in area.data_frames.keys(){
+                    self.page_table.unmap(mapped_vpn);
+                }
+                return Err(());
+            }
+            area.data_frames.insert(vpn,frame);
+        }
+        self.areas.push(area);
+        Ok(())
+    }
+
+    /// start/end 已按页对齐，且 start < end。
+    pub fn munmap(&mut self, start: usize, end: usize) -> Result<(), ()> {
+        let start_vpn = VirtAddr::from(start).floor();
+        let end_vpn = VirtAddr::from(end).floor();
+
+        // 先验证全部页面，避免检查到一半才发现错误。
+        for vpn in VPNRange::new(start_vpn, end_vpn) {
+            let pte = self.page_table.translate(vpn).ok_or(())?;
+
+            // 不允许用户解除 trampoline / TrapContext 等内核专用映射。
+            if !pte.is_valid() || !pte.flags().contains(PTEFlags::U) {
+                return Err(());
+            }
+
+            // 确认数据页确实由当前地址空间管理。
+            let owned = self.areas.iter().any(|area| {
+                area.map_type == MapType::Framed
+                    && area.data_frames.contains_key(&vpn)
+            });
+
+            if !owned {
+                return Err(());
+            }
+        }
+
+        // 取出原来的区域记录，再按解除映射后的结果重建。
+        let old_areas = core::mem::take(&mut self.areas);
+
+        for mut area in old_areas {
+            let area_start = area.vpn_range.get_start();
+            let area_end = area.vpn_range.get_end();
+
+            // 空区域（例如尚未增长的堆）或没有交集，原样保留。
+            if area_start == area_end
+                || area_end <= start_vpn
+                || area_start >= end_vpn
+            {
+                self.areas.push(area);
+                continue;
+            }
+
+            let cut_start = core::cmp::max(area_start, start_vpn);
+            let cut_end = core::cmp::min(area_end, end_vpn);
+
+            for vpn in VPNRange::new(cut_start, cut_end) {
+                // 先删除映射，再释放物理页。
+                self.page_table.unmap(vpn);
+                area.data_frames.remove(&vpn);
+            }
+
+            // 把右侧剩余物理页移到独立的区域记录。
+            let right_frames = area.data_frames.split_off(&cut_end);
+            let map_type = area.map_type;
+            let map_perm = area.map_perm;
+
+            // 保留左侧区域。
+            if area_start < cut_start {
+                area.vpn_range = VPNRange::new(area_start, cut_start);
+                self.areas.push(area);
+            }
+
+            // 保留右侧区域。
+            if cut_end < area_end {
+                self.areas.push(MapArea {
+                    vpn_range: VPNRange::new(cut_end, area_end),
+                    data_frames: right_frames,
+                    map_type,
+                    map_perm,
+                });
+            }
+        }
+
+        Ok(())
+    }
+
+
 }
 /// map area structure, controls a contiguous piece of virtual memory
 pub struct MapArea {
