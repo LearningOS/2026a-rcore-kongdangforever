@@ -99,7 +99,7 @@ impl PageTable {
                 break;
             }
             if !pte.is_valid() {
-                let frame = frame_alloc().unwrap();
+                let frame = frame_alloc()?;
                 *pte = PageTableEntry::new(frame.ppn, PTEFlags::V);
                 self.frames.push(frame);
             }
@@ -157,6 +157,25 @@ impl PageTable {
     /// get the token from the page table
     pub fn token(&self) -> usize {
         8usize << 60 | self.root_ppn.0
+    }
+
+
+
+    /// 尝试映射虚拟页到物理页，失败返回错误。
+    pub fn try_map(
+        &mut self,
+        vpn: VirtPageNum,
+        ppn: PhysPageNum,
+        flags: PTEFlags,
+    ) -> Result<(), ()> {
+        let pte = self.find_pte_create(vpn).ok_or(())?;
+
+        if pte.is_valid() {
+            return Err(());
+        }
+
+        *pte = PageTableEntry::new(ppn, flags | PTEFlags::V);
+        Ok(())
     }
 }
 

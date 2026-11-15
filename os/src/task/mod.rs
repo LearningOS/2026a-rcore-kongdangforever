@@ -27,6 +27,7 @@ use lazy_static::*;
 pub use manager::{fetch_task, TaskManager};
 use switch::__switch;
 pub use task::{TaskControlBlock, TaskStatus};
+use crate::mm::MapPermission;
 
 pub use context::TaskContext;
 pub use id::{kstack_alloc, pid_alloc, KernelStack, PidHandle};
@@ -114,4 +115,27 @@ lazy_static! {
 ///Add init process to the manager
 pub fn add_initproc() {
     add_task(INITPROC.clone());
+}
+
+/// 在当前进程的地址空间中创建匿名映射。
+pub fn mmap_current(
+    start: usize,
+    end: usize,
+    permission: MapPermission,
+) -> Result<(), ()> {
+    let task = current_task().unwrap();
+    let mut inner = task.inner_exclusive_access();
+
+    inner.memory_set.mmap(start, end, permission)
+}
+
+/// 解除当前进程的指定映射并回收数据页。
+pub fn munmap_current(
+    start: usize,
+    end: usize,
+) -> Result<(), ()> {
+    let task = current_task().unwrap();
+    let mut inner = task.inner_exclusive_access();
+
+    inner.memory_set.munmap(start, end)
 }
