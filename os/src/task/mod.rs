@@ -23,6 +23,7 @@ mod switch;
 mod task;
 
 use crate::fs::{open_file, OpenFlags};
+use crate::mm::MapPermission;
 use alloc::sync::Arc;
 pub use context::TaskContext;
 use lazy_static::*;
@@ -119,4 +120,18 @@ lazy_static! {
 ///Add init process to the manager
 pub fn add_initproc() {
     add_task(INITPROC.clone());
+}
+
+/// Map anonymous pages into the current process.
+pub fn mmap_current(start: usize, end: usize, permission: MapPermission) -> Result<(), ()> {
+    let task = current_task().unwrap();
+    let mut inner = task.inner_exclusive_access();
+    inner.memory_set.mmap(start, end, permission)
+}
+
+/// Unmap pages from the current process.
+pub fn munmap_current(start: usize, end: usize) -> Result<(), ()> {
+    let task = current_task().unwrap();
+    let mut inner = task.inner_exclusive_access();
+    inner.memory_set.munmap(start, end)
 }
