@@ -6,7 +6,9 @@ use core::fmt::{Debug, Formatter, Result};
 /// Magic number for sanity check
 const EFS_MAGIC: u32 = 0x3b800001;
 /// The max number of direct inodes
-const INODE_DIRECT_COUNT: usize = 28;
+// Keep `DiskInode` at 128 bytes after adding the link count so that four
+// inodes still fit exactly in one disk block.
+const INODE_DIRECT_COUNT: usize = 27;
 /// The max length of inode name
 const NAME_LENGTH_LIMIT: usize = 27;
 /// The max number of indirect1 inodes
@@ -86,6 +88,7 @@ pub struct DiskInode {
     pub indirect1: u32,
     pub indirect2: u32,
     type_: DiskInodeType,
+    nlink: u32,
 }
 
 impl DiskInode {
@@ -97,6 +100,7 @@ impl DiskInode {
         self.indirect1 = 0;
         self.indirect2 = 0;
         self.type_ = type_;
+        self.nlink = 1;
     }
     /// Whether this inode is a directory
     pub fn is_dir(&self) -> bool {
@@ -106,6 +110,28 @@ impl DiskInode {
     #[allow(unused)]
     pub fn is_file(&self) -> bool {
         self.type_ == DiskInodeType::File
+    }
+    /// Return the number of directory entries that refer to this inode.
+    pub fn nlink(&self) -> u32 {
+        self.nlink
+    }
+    /// Add one hard link to this inode.
+    pub fn increase_nlink(&mut self) -> bool {
+        if let Some(nlink) = self.nlink.checked_add(1) {
+            self.nlink = nlink;
+            true
+        } else {
+            false
+        }
+    }
+    /// Remove one hard link and return the remaining link count.
+    pub fn decrease_nlink(&mut self) -> Option<u32> {
+        if self.nlink == 0 {
+            None
+        } else {
+            self.nlink -= 1;
+            Some(self.nlink)
+        }
     }
     /// Return block number correspond to size.
     pub fn data_blocks(&self) -> u32 {
