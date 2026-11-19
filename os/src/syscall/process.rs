@@ -1,12 +1,17 @@
 use crate::{
+    config::PAGE_SIZE,
     fs::{open_file, OpenFlags},
-    mm::{translated_ref, translated_refmut, translated_str},
-    task::{
-        current_process, current_task, current_user_token, exit_current_and_run_next, pid2process,
-        suspend_current_and_run_next, SignalFlags,
+    mm::{
+        translated_byte_buffer, translated_ref, translated_refmut, translated_str, MapPermission,
     },
+    task::{
+        current_process, current_task, current_user_token, exit_current_and_run_next, mmap_current,
+        munmap_current, pid2process, spawn_process, suspend_current_and_run_next, SignalFlags,
+    },
+    timer::get_time_us,
 };
 use alloc::{string::String, sync::Arc, vec::Vec};
+use core::mem::size_of;
 
 #[repr(C)]
 #[derive(Debug)]
@@ -148,37 +153,110 @@ pub fn sys_kill(pid: usize, signal: u32) -> isize {
 
 /// get_time syscall
 ///
-/// YOUR JOB: get time with second and microsecond
-/// HINT: You might reimplement it with virtual memory management.
-/// HINT: What if [`TimeVal`] is splitted by two pages ?
-pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
+pub fn sys_get_time(ts: *mut TimeVal, _tz: usize) -> isize {
     trace!(
-        "kernel:pid[{}] sys_get_time NOT IMPLEMENTED",
+        "kernel:pid[{}] sys_get_time",
         current_task().unwrap().process.upgrade().unwrap().getpid()
     );
-    -1
+    let us = get_time_us();
+    let time = TimeVal {
+        sec: us / 1_000_000,
+        usec: us % 1_000_000,
+    };
+    let src = unsafe {
+        core::slice::from_raw_parts(&time as *const TimeVal as *const u8, size_of::<TimeVal>())
+    };
+    let mut copied = 0;
+    for buffer in
+        translated_byte_buffer(current_user_token(), ts as *const u8, size_of::<TimeVal>())
+    {
+        let len = buffer.len();
+        buffer.copy_from_slice(&src[copied..copied + len]);
+        copied += len;
+    }
+    0
 }
 
 /// mmap syscall
 ///
-/// YOUR JOB: Implement mmap.
-pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
+pub fn sys_mmap(start: usize, len: usize, port: usize) -> isize {
     trace!(
-        "kernel:pid[{}] sys_mmap NOT IMPLEMENTED",
+        "kernel:pid[{}] sys_mmap",
         current_task().unwrap().process.upgrade().unwrap().getpid()
     );
-    -1
+    if start % PAGE_SIZE != 0 || port & !0x7 != 0 || port & 0x7 == 0 {
+        return -1;
+    }
+    if len == 0 {
+        return 0;
+    }
+    let end = match start.checked_add(len) {
+        Some(end) => end,
+        None => return -1,
+    };
+    let is_sv39_address = |addr: usize| {
+        let upper = addr >> 39;
+        let sign = (addr >> 38) & 1;
+        upper == if sign == 0 { 0 } else { usize::MAX >> 39 }
+    };
+    if !is_sv39_address(start) || !is_sv39_address(end - 1) || (start >> 38) != ((end - 1) >> 38) {
+        return -1;
+    }
+    let aligned_end = match end.checked_add(PAGE_SIZE - 1) {
+        Some(value) => value & !(PAGE_SIZE - 1),
+        None => return -1,
+    };
+    let mut permission = MapPermission::U;
+    if port & 0x1 != 0 {
+        permission |= MapPermission::R;
+    }
+    if port & 0x2 != 0 {
+        permission |= MapPermission::W;
+    }
+    if port & 0x4 != 0 {
+        permission |= MapPermission::X;
+    }
+    if mmap_current(start, aligned_end, permission).is_ok() {
+        0
+    } else {
+        -1
+    }
 }
 
 /// munmap syscall
 ///
-/// YOUR JOB: Implement munmap.
-pub fn sys_munmap(_start: usize, _len: usize) -> isize {
+pub fn sys_munmap(start: usize, len: usize) -> isize {
     trace!(
-        "kernel:pid[{}] sys_munmap NOT IMPLEMENTED",
+        "kernel:pid[{}] sys_munmap",
         current_task().unwrap().process.upgrade().unwrap().getpid()
     );
-    -1
+    if start % PAGE_SIZE != 0 {
+        return -1;
+    }
+    if len == 0 {
+        return 0;
+    }
+    let end = match start.checked_add(len) {
+        Some(end) => end,
+        None => return -1,
+    };
+    let is_sv39_address = |addr: usize| {
+        let upper = addr >> 39;
+        let sign = (addr >> 38) & 1;
+        upper == if sign == 0 { 0 } else { usize::MAX >> 39 }
+    };
+    if !is_sv39_address(start) || !is_sv39_address(end - 1) || (start >> 38) != ((end - 1) >> 38) {
+        return -1;
+    }
+    let aligned_end = match end.checked_add(PAGE_SIZE - 1) {
+        Some(value) => value & !(PAGE_SIZE - 1),
+        None => return -1,
+    };
+    if munmap_current(start, aligned_end).is_ok() {
+        0
+    } else {
+        -1
+    }
 }
 
 /// change data segment size
@@ -190,24 +268,30 @@ pub fn sys_munmap(_start: usize, _len: usize) -> isize {
 //     -1
 // }
 
-/// spawn syscall
-/// YOUR JOB: Implement spawn.
-/// HINT: fork + exec =/= spawn
-pub fn sys_spawn(_path: *const u8) -> isize {
+/// Create a child directly from an executable in the filesystem.
+pub fn sys_spawn(path: *const u8) -> isize {
     trace!(
-        "kernel:pid[{}] sys_spawn NOT IMPLEMENTED",
+        "kernel:pid[{}] sys_spawn",
         current_task().unwrap().process.upgrade().unwrap().getpid()
     );
-    -1
+    let path = translated_str(current_user_token(), path);
+    let app_inode = match open_file(path.as_str(), OpenFlags::RDONLY) {
+        Some(inode) => inode,
+        None => return -1,
+    };
+    spawn_process(app_inode.read_all().as_slice()) as isize
 }
 
 /// set priority syscall
 ///
-/// YOUR JOB: Set task priority
-pub fn sys_set_priority(_prio: isize) -> isize {
+pub fn sys_set_priority(prio: isize) -> isize {
     trace!(
-        "kernel:pid[{}] sys_set_priority NOT IMPLEMENTED",
+        "kernel:pid[{}] sys_set_priority",
         current_task().unwrap().process.upgrade().unwrap().getpid()
     );
-    -1
+    if prio < 2 {
+        return -1;
+    }
+    current_task().unwrap().inner_exclusive_access().priority = prio as usize;
+    prio
 }

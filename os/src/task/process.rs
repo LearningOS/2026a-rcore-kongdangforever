@@ -49,6 +49,122 @@ pub struct ProcessControlBlockInner {
     pub semaphore_list: Vec<Option<Arc<Semaphore>>>,
     /// condvar list
     pub condvar_list: Vec<Option<Arc<Condvar>>>,
+    /// Per-process resource-allocation state used by deadlock detection.
+    pub deadlock: DeadlockState,
+}
+
+/// Resource-allocation graph for all threads in one process.
+#[derive(Default)]
+pub struct DeadlockState {
+    pub enabled: bool,
+    pub mutex_available: Vec<usize>,
+    pub semaphore_available: Vec<usize>,
+    pub mutex_allocation: Vec<Vec<usize>>,
+    pub semaphore_allocation: Vec<Vec<usize>>,
+    pub mutex_request: Vec<Vec<usize>>,
+    pub semaphore_request: Vec<Vec<usize>>,
+}
+
+impl DeadlockState {
+    /// Ensure that allocation/request rows exist for `tid`.
+    pub fn ensure_thread(&mut self, tid: usize) {
+        while self.mutex_allocation.len() <= tid {
+            self.mutex_allocation
+                .push(vec![0; self.mutex_available.len()]);
+            self.semaphore_allocation
+                .push(vec![0; self.semaphore_available.len()]);
+            self.mutex_request.push(vec![0; self.mutex_available.len()]);
+            self.semaphore_request
+                .push(vec![0; self.semaphore_available.len()]);
+        }
+    }
+
+    /// Register a newly-created mutex at its process-local ID.
+    pub fn add_mutex(&mut self, id: usize) {
+        while self.mutex_available.len() <= id {
+            self.mutex_available.push(1);
+            for row in self.mutex_allocation.iter_mut() {
+                row.push(0);
+            }
+            for row in self.mutex_request.iter_mut() {
+                row.push(0);
+            }
+        }
+        self.mutex_available[id] = 1;
+    }
+
+    /// Register a newly-created semaphore at its process-local ID.
+    pub fn add_semaphore(&mut self, id: usize, count: usize) {
+        while self.semaphore_available.len() <= id {
+            self.semaphore_available.push(0);
+            for row in self.semaphore_allocation.iter_mut() {
+                row.push(0);
+            }
+            for row in self.semaphore_request.iter_mut() {
+                row.push(0);
+            }
+        }
+        self.semaphore_available[id] = count;
+    }
+
+    /// Return true when the current outstanding requests cannot all finish.
+    pub fn would_deadlock(&self) -> bool {
+        let thread_count = self
+            .mutex_allocation
+            .len()
+            .max(self.semaphore_allocation.len());
+        let mut work_mutex = self.mutex_available.clone();
+        let mut work_semaphore = self.semaphore_available.clone();
+        let mut finished = vec![false; thread_count];
+
+        loop {
+            let mut progressed = false;
+            for tid in 0..thread_count {
+                if finished[tid] {
+                    continue;
+                }
+                let mutex_ok = self
+                    .mutex_request
+                    .get(tid)
+                    .map(|row| {
+                        row.iter().enumerate().all(|(id, &request)| {
+                            request <= work_mutex.get(id).copied().unwrap_or(0)
+                        })
+                    })
+                    .unwrap_or(true);
+                let semaphore_ok = self
+                    .semaphore_request
+                    .get(tid)
+                    .map(|row| {
+                        row.iter().enumerate().all(|(id, &request)| {
+                            request <= work_semaphore.get(id).copied().unwrap_or(0)
+                        })
+                    })
+                    .unwrap_or(true);
+                if !mutex_ok || !semaphore_ok {
+                    continue;
+                }
+
+                if let Some(row) = self.mutex_allocation.get(tid) {
+                    for (id, &allocation) in row.iter().enumerate() {
+                        work_mutex[id] += allocation;
+                    }
+                }
+                if let Some(row) = self.semaphore_allocation.get(tid) {
+                    for (id, &allocation) in row.iter().enumerate() {
+                        work_semaphore[id] += allocation;
+                    }
+                }
+                finished[tid] = true;
+                progressed = true;
+            }
+            if !progressed {
+                break;
+            }
+        }
+
+        finished.iter().any(|finished| !finished)
+    }
 }
 
 impl ProcessControlBlockInner {
@@ -119,6 +235,7 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
+                    deadlock: DeadlockState::default(),
                 })
             },
         });
@@ -245,6 +362,7 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
+                    deadlock: DeadlockState::default(),
                 })
             },
         });

@@ -293,6 +293,101 @@ impl MemorySet {
             false
         }
     }
+
+    /// Map a previously unused user-space range with freshly allocated frames.
+    pub fn mmap(&mut self, start: usize, end: usize, permission: MapPermission) -> Result<(), ()> {
+        let mut area = MapArea::new(
+            VirtAddr::from(start),
+            VirtAddr::from(end),
+            MapType::Framed,
+            permission,
+        );
+
+        for vpn in area.vpn_range {
+            if self
+                .page_table
+                .translate(vpn)
+                .map_or(false, |pte| pte.is_valid())
+            {
+                return Err(());
+            }
+        }
+
+        let flags = PTEFlags::from_bits(permission.bits).ok_or(())?;
+        for vpn in area.vpn_range {
+            let frame = match frame_alloc() {
+                Some(frame) => frame,
+                None => {
+                    for &mapped_vpn in area.data_frames.keys() {
+                        self.page_table.unmap(mapped_vpn);
+                    }
+                    return Err(());
+                }
+            };
+            if self.page_table.try_map(vpn, frame.ppn, flags).is_err() {
+                for &mapped_vpn in area.data_frames.keys() {
+                    self.page_table.unmap(mapped_vpn);
+                }
+                return Err(());
+            }
+            area.data_frames.insert(vpn, frame);
+        }
+        self.areas.push(area);
+        Ok(())
+    }
+
+    /// Unmap a complete user-space range and reclaim its data frames.
+    pub fn munmap(&mut self, start: usize, end: usize) -> Result<(), ()> {
+        let start_vpn = VirtAddr::from(start).floor();
+        let end_vpn = VirtAddr::from(end).floor();
+
+        for vpn in VPNRange::new(start_vpn, end_vpn) {
+            let pte = self.page_table.translate(vpn).ok_or(())?;
+            if !pte.is_valid() || !pte.flags().contains(PTEFlags::U) {
+                return Err(());
+            }
+            let owned = self.areas.iter().any(|area| {
+                area.map_type == MapType::Framed && area.data_frames.contains_key(&vpn)
+            });
+            if !owned {
+                return Err(());
+            }
+        }
+
+        let old_areas = core::mem::take(&mut self.areas);
+        for mut area in old_areas {
+            let area_start = area.vpn_range.get_start();
+            let area_end = area.vpn_range.get_end();
+            if area_start == area_end || area_end <= start_vpn || area_start >= end_vpn {
+                self.areas.push(area);
+                continue;
+            }
+
+            let cut_start = core::cmp::max(area_start, start_vpn);
+            let cut_end = core::cmp::min(area_end, end_vpn);
+            for vpn in VPNRange::new(cut_start, cut_end) {
+                self.page_table.unmap(vpn);
+                area.data_frames.remove(&vpn);
+            }
+
+            let right_frames = area.data_frames.split_off(&cut_end);
+            let map_type = area.map_type;
+            let map_perm = area.map_perm;
+            if area_start < cut_start {
+                area.vpn_range = VPNRange::new(area_start, cut_start);
+                self.areas.push(area);
+            }
+            if cut_end < area_end {
+                self.areas.push(MapArea {
+                    vpn_range: VPNRange::new(cut_end, area_end),
+                    data_frames: right_frames,
+                    map_type,
+                    map_perm,
+                });
+            }
+        }
+        Ok(())
+    }
 }
 
 pub struct MapArea {

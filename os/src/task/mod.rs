@@ -21,6 +21,7 @@ mod task;
 
 use self::id::TaskUserRes;
 use crate::fs::{open_file, OpenFlags};
+use crate::mm::MapPermission;
 use crate::task::manager::add_stopping_task;
 use crate::timer::remove_timer;
 use alloc::{sync::Arc, vec::Vec};
@@ -203,4 +204,30 @@ pub fn remove_inactive_task(task: Arc<TaskControlBlock>) {
     remove_task(Arc::clone(&task));
     trace!("kernel: remove_inactive_task .. remove_timer");
     remove_timer(Arc::clone(&task));
+}
+
+/// Map anonymous pages into the current process address space.
+pub fn mmap_current(start: usize, end: usize, permission: MapPermission) -> Result<(), ()> {
+    current_process()
+        .inner_exclusive_access()
+        .memory_set
+        .mmap(start, end, permission)
+}
+
+/// Unmap pages from the current process address space.
+pub fn munmap_current(start: usize, end: usize) -> Result<(), ()> {
+    current_process()
+        .inner_exclusive_access()
+        .memory_set
+        .munmap(start, end)
+}
+
+/// Create a child process directly from an executable image.
+pub fn spawn_process(elf_data: &[u8]) -> usize {
+    let parent = current_process();
+    let child = ProcessControlBlock::new(elf_data);
+    let child_pid = child.getpid();
+    child.inner_exclusive_access().parent = Some(Arc::downgrade(&parent));
+    parent.inner_exclusive_access().children.push(child);
+    child_pid
 }
